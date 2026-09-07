@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>3style Corner Parity Trainer</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+	<div class="container">
+		<h1>3style Corner Parity Trainer</h1>
+
+		<div class="counter-display" id="counterDisplay">残り: 0 / 0</div>
+
+		<div class="pair-display" id="pairDisplay">--</div>
+		<button id="nextBtn">次へ (Space)</button>
+
+		<div class="prev-display" id="prevDisplay"></div>
+
+		<hr class="separator">
+
+		<div class="settings-grid">
+			<div class="filter-section">
+				<label for="bufferInput">Buffer (1文字)</label>
+				<input type="text" id="bufferInput" maxlength="1" placeholder="例：う" value="う">
+			</div>
+			<div class="filter-section">
+				<label for="firstCharInput">文字指定（カンマ区切り可）</label>
+				<input type="text" id="firstCharInput" placeholder="例: あ, か, さ">
+			</div>
+		</div>
+
+		<div class="scheme-section">
+			<label for="schemeInput">レタースキーム設定 (左から順に24文字)</label>
+			<input type="text" id="schemeInput" value="あいうえかきくけさしすせたちつてなにぬねはひふへ">
+
+			<div class="scheme-controls">
+				<button id="presetABtn" class="sub-btn">まっさん</button>
+				<button id="presetBBtn" class="sub-btn">speffez</button>
+			</div>
+
+			<div class="scheme-guide" id="schemeGuide"></div>
+		</div>
+	</div>
+
+<script>
+	const PRESET_A = "あいうえかきくけさしすせたちつてなにぬねはひふへ";
+	const PRESET_B = "ABCDIJKLMNOPQRSTEFGHUVWX";
+	
+// 1. コーナーの全24ステッカーの順序定義
+const baseStickers = [
+	// U面 (0~3)
+	'UBL', 'UBR', 'UFR', 'UFL',
+	// L面 (4~7)
+	'LUB', 'LUF', 'LDF', 'LDB',
+	// F面 (8~11)
+	'FUL', 'FUR', 'FDR', 'FDL',
+	// R面 (12~15)
+	'RUF', 'RUB', 'RDB', 'RDF',
+	// B面 (16~19)
+	'BUR', 'BUL', 'BDL', 'BDR',
+	// D面 (20~23)
+	'DFL', 'DFR', 'DBR', 'DBL'
+];
+
+// 2. 同一パーツの3ステッカー（グループ）定義
+// 1つのコーナーパーツにつき3つのインデックスが対応します
+const cornerGroups = [
+	[0, 4, 17],   // UBL - LUB - BUL
+	[1, 13, 16],  // UBR - RUB - BUR
+	[2, 9, 12],   // UFR - FUR - RUF
+	[3, 5, 8],    // UFL - LUF - FUL
+	[6, 11, 20],  // LDF - FDL - DFL
+	[7, 18, 23],  // LDB - BDR - DBL
+	[10, 15, 21], // FDR - RDF - DFR
+	[14, 19, 22]  // RDB - BDR(19/18重複注意:正しくはBDR/DBR等) - DBR
+];
+
+	const schemeInput = document.getElementById('schemeInput');
+	const pairDisplay = document.getElementById('pairDisplay');
+	const nextBtn = document.getElementById('nextBtn');
+	const bufferInput = document.getElementById('bufferInput');
+	const firstCharInput = document.getElementById('firstCharInput');
+	const counterDisplay = document.getElementById('counterDisplay');
+	const prevDisplay = document.getElementById('prevDisplay');
+	const schemeGuide = document.getElementById('schemeGuide');
+	
+	const presetABtn = document.getElementById('presetABtn');
+	const presetBBtn = document.getElementById('presetBBtn');
+
+	let currentDeck = [];
+	let totalPairsInDeck = 0;
+	let activeChar = "";
+	let isFinished = false;
+
+	function updateGuide(lettersList) {
+		schemeGuide.innerHTML = '';
+		baseStickers.forEach((sticker, idx) => {
+			const char = lettersList[idx] || '?';
+			const item = document.createElement('div');
+			item.className = 'guide-item';
+			item.innerHTML = `<span class="sticker-name">${sticker}</span>:<span class="sticker-char">${char}</span>`;
+			schemeGuide.appendChild(item);
+		});
+	}
+
+	function getLettersList() {
+		const val = schemeInput.value.trim();
+		return val.split('');
+	}
+
+	// 指定されたバッファ文字と、そのパーツの残り2面の文字（計3文字）を取得
+	function getExcludedLetters(lettersList) {
+		const bufferChar = bufferInput.value.trim();
+		if (!bufferChar || !lettersList.includes(bufferChar)) return [];
+		
+		const bufferIdx = lettersList.indexOf(bufferChar);
+		const excluded = [];
+
+		for (let group of cornerGroups) {
+			if (group.includes(bufferIdx)) {
+				group.forEach(idx => {
+					if (lettersList[idx]) excluded.push(lettersList[idx]);
+				});
+				break;
+			}
+		}
+		return excluded;
+	}
+
+	function generateDeck() {
+		pairDisplay.classList.remove('error');
+		nextBtn.disabled = false;
+		prevDisplay.textContent = "";
+		activeChar = "";
+		isFinished = false;
+
+		const lettersList = getLettersList();
+		updateGuide(lettersList);
+
+		if (lettersList.length !== 24) {
+			pairDisplay.textContent = `エラー: 24文字必要です (現在: ${lettersList.length})`;
+			pairDisplay.classList.add('error');
+			currentDeck = []; totalPairsInDeck = 0; updateCounter(); nextBtn.disabled = true;
+			return;
+		}
+
+		const excluded = getExcludedLetters(lettersList);
+		const availableLetters = lettersList.filter(char => !excluded.includes(char));
+
+		// フィルタ条件の処理
+		const rawInput = firstCharInput.value.trim();
+		const filterChars = rawInput ? rawInput.split(/[,，、\s]+/).filter(Boolean) : [];
+
+		// フィルタにバッファ関連の文字が含まれているかのチェック
+		const hasConflict = filterChars.some(char => excluded.includes(char));
+		if (hasConflict) {
+			pairDisplay.textContent = `エラー: Bufferグループの文字「${excluded.join(', ')}」が含まれています`;
+			pairDisplay.classList.add('error');
+			currentDeck = []; totalPairsInDeck = 0; updateCounter(); nextBtn.disabled = true;
+			return;
+		}
+
+		// デッキ作成（出題候補の抽出）
+		let newDeck = availableLetters.filter(char => {
+			if (filterChars.length === 0) return true;
+			return filterChars.includes(char);
+		});
+
+		// シャッフル
+		for (let i = newDeck.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]];
+		}
+
+		currentDeck = newDeck;
+		totalPairsInDeck = newDeck.length;
+		updateCounter();
+	}
+
+	function updateCounter() {
+		if (isFinished) {
+			counterDisplay.textContent = `残り: 0 / ${totalPairsInDeck}`;
+		} else {
+			const currentShowingCount = currentDeck.length + (activeChar ? 1 : 0);
+			counterDisplay.textContent = `残り: ${currentShowingCount} / ${totalPairsInDeck}`;
+		}
+	}
+
+	function showNextPair() {
+		if (pairDisplay.classList.contains('error')) return;
+
+		if (isFinished || (currentDeck.length === 0 && !activeChar)) {
+			generateDeck();
+			if (currentDeck.length === 0) {
+				pairDisplay.textContent = "なし";
+				isFinished = true;
+				updateCounter();
+				prevDisplay.textContent = "";
+				return;
+			}
+		}
+
+		if (activeChar) {
+			prevDisplay.textContent = `前回の文字: ${activeChar}`;
+		}
+
+		if (currentDeck.length > 0) {
+			activeChar = currentDeck.shift();
+			pairDisplay.textContent = activeChar;
+			isFinished = false;
+		} else {
+			activeChar = "";
+			pairDisplay.textContent = "終了";
+			isFinished = true;
+		}
+		
+		updateCounter();
+	}
+
+	presetABtn.addEventListener('click', () => {
+		schemeInput.value = PRESET_A;
+		bufferInput.value = "う";
+		generateDeck();
+		showNextPair();
+	});
+
+	presetBBtn.addEventListener('click', () => {
+		schemeInput.value = PRESET_B;
+		bufferInput.value = "C";
+		generateDeck();
+		showNextPair();
+	});
+
+	schemeInput.addEventListener('input', generateDeck);
+	bufferInput.addEventListener('input', () => { generateDeck(); if (!pairDisplay.classList.contains('error')) showNextPair(); });
+	firstCharInput.addEventListener('input', () => { generateDeck(); if (!pairDisplay.classList.contains('error')) showNextPair(); });
+	nextBtn.addEventListener('click', showNextPair);
+
+	document.addEventListener('keydown', (event) => {
+		if (document.activeElement === firstCharInput || document.activeElement === bufferInput || document.activeElement === schemeInput) return;
+		if (event.code === 'Space') {
+			event.preventDefault();
+			showNextPair();
+		}
+	});
+
+	generateDeck();
+	if (!pairDisplay.classList.contains('error')) showNextPair();
+</script>
+
+</body>
+
+</html>
